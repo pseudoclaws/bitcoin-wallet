@@ -1,0 +1,120 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require 'bundler'
+Bundler.setup
+
+require 'bitcoin'
+require 'optparse'
+require_relative '../auto_inject/container'
+require_relative '../configure_autoinject'
+
+options = {
+  network: :testnet3
+}
+
+optparse = OptionParser.new do |opts|
+  opts.banner =
+    "Usage: transfer [options] <command> [<command options>]\n"
+
+  opts.separator("\nAvailable options:\n")
+
+  opts.on('-n', '--network NETWORK', "User Network (default: #{options[:network]})") do |network|
+    options[:network] = network
+  end
+
+  opts.on('-h', '--help', 'Display this help') do
+    puts opts
+    exit
+  end
+
+  opts.separator "\nAvailable commands:\n" +
+                   " show - display your current addr\n" +
+                   " balance - display balance for given addr\n" +
+                   " send <addr>:<amount> - send transaction, amount in satoshi\n" +
+                   " new - generate and save new key\n"
+
+end
+
+optparse.parse!
+
+cmd = ARGV.shift
+cmdopts = ARGV
+unless cmd
+  puts optparse
+  exit
+end
+
+Bitcoin.network = options[:network]
+
+DEFAULT_FEE = 10_000
+
+balance = Container.resolve('wallet.get_balance')
+create_transaction = Container.resolve('wallet.create_tx')
+post_transaction = Container.resolve('blockstream.post_tx')
+validate_new = Container.resolve('validation.validate_new')
+validate_common = Container.resolve('validation.validate_common')
+
+storage_path = File.expand_path('../private.key', __dir__)
+
+storage_exists = File.exist?(storage_path)
+
+state_valid, error_message = if cmd == 'new'
+                               [
+                                 validate_new.(storage_exists),
+                                 'Address has been already initialized'
+                               ]
+                             else
+                               [
+                                 validate_common.(storage_exists),
+                                 'You should initialize address first'
+                               ]
+                             end
+unless state_valid
+  puts error_message
+  exit
+end
+
+key = Bitcoin::Key.from_base58(File.read(storage_path)) if storage_exists
+
+case cmd
+when 'show'
+  puts "Your address is #{key.addr}"
+when 'balance'
+  addr = key.addr
+  balance = balance.(addr)
+  puts "#{addr} balance: #{balance} satoshi"
+
+when 'new'
+  key = Bitcoin::Key.generate
+  File.write(storage_path, key.to_base58)
+  puts "Generated new key with address: #{key.addr}"
+when 'send'
+  opts = cmdopts[0]
+  if opts.nil?
+    puts 'This command should contain address and value in the format address:value'
+    exit
+  end
+
+  to, amount = opts.split(':')
+
+  if to.nil? || amount.nil?
+    puts 'This command should contain address and value in the format address:value'
+    exit
+  end
+
+  amount = amount.to_i
+
+  if balance.(key.addr) - DEFAULT_FEE < amount
+    puts 'Insufficient funds'
+    exit
+  end
+
+  tx = create_transaction.(key, to, amount, DEFAULT_FEE)
+
+  tx_id = post_transaction.(tx)
+
+  puts "Transaction #{tx_id} has been successfully created"
+else
+  puts 'Unknown command. See --help for available commands.'
+end

@@ -1,0 +1,11 @@
+version: '3.8'
+
+services:
+  wallet:
+    container_name: bitcoin-wallet
+    image: pseudoclaws/bitcoin-wallet:latest
+    build:
+      context: ./
+      dockerfile: ./Dockerfile
+    volumes:
+      - /app/bin # to store key
